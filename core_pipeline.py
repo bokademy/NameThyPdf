@@ -124,6 +124,7 @@ def extract_all_identifiers(filename: str, text: str) -> dict:
     combined = f"{filename}\n{text}"
     
     # Extract DOI
+    # Extract DOI
     doi_match = re.search(r'10\.\d{4,9}/[-._;()/:A-Za-z0-9]+', combined)
     if doi_match:
         ids["doi"] = doi_match.group(0).rstrip('.)/,_')
@@ -131,6 +132,11 @@ def extract_all_identifiers(filename: str, text: str) -> dict:
         doi_fn = re.search(r'10\.\d{4,9}[_][\w\-.]+', filename)
         if doi_fn:
             ids["doi"] = doi_fn.group(0).replace('_', '/', 1)
+        else:
+            # Catch filename DOIs separated by hyphens or underscores (e.g. 10.17335-sakaifd...)
+            doi_loose = re.search(r'(10\.\d{4,9})[-_]([A-Za-z0-9\.\-_]+)', filename)
+            if doi_loose:
+                ids["doi"] = f"{doi_loose.group(1)}/{doi_loose.group(2)}"
 
     # Extract ISBN
     isbns = re.findall(r'(?:ISBN(?:-1[03])?:?\s*)?([0-9Xx\-\s]{10,25})', combined, re.I)
