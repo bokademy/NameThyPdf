@@ -384,20 +384,22 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         return False, filename, "Unreadable text layer"
 
    meta = {}
+    meta = {}
     ids = extract_all_identifiers(filename, front_text)
 
     # 1. Exact Database Lookups
     # If filename or text clearly indicates a book with an ISBN, prioritize ISBN over embedded article DOIs
-    if ids.get("isbn") and ("isbn" in filename.lower() or "press" in front_text.lower() or "contents" in front_text.lower()):
+    is_book_context = any(w in front_text.lower() for w in ["isbn", "contents", "university press", "index"]) or "isbn" in filename.lower()
+
+    if ids.get("isbn") and is_book_context:
         meta = resolve_google_books(ids["isbn"]) or resolve_openlibrary_isbn(ids["isbn"])
 
     # Fallback to DOI only if ISBN did not resolve or wasn't prioritized
     if not meta and ids.get("doi"):
         doi_meta = resolve_crossref_doi(ids["doi"])
-        # Guardrail: If text contains strong book indicators but DOI resolved to a journal article, discard it
-        if doi_meta and doi_meta.get("doc_type") == "Journal Article" and ("isbn" in front_text.lower() or "contents" in front_text.lower()):
-            pass
-        elif doi_meta:
+        if doi_meta and doi_meta.get("doc_type") == "Journal Article" and is_book_context:
+            doi_meta = {}
+        if doi_meta:
             meta = doi_meta
 
     # Fallback to ISBN if DOI was skipped or failed
