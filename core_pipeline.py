@@ -439,7 +439,7 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
     raw_main_title = str(meta.get("main_title") or meta.get("title") or "").strip()
     raw_main_title = re.sub(r'(?i)copyright.*', '', raw_main_title).strip()
     
-    # Başlık boşsa ilk anlamlı satırdan veya dosya adından kurtar
+    # Fallback title extraction from first non-empty text line or filename
     if not raw_main_title or len(raw_main_title) < 3:
         clean_lines = [l.strip() for l in front_text.splitlines() if len(l.strip()) > 6 and not l.strip().startswith("---")]
         raw_main_title = clean_lines[0] if clean_lines else os.path.splitext(filename)[0]
@@ -473,9 +473,9 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
 
     surnames = extract_surnames(meta.get("authors")) or extract_surnames(meta.get("editors"))
 
-    # Son Çare Yazar Kurtarma: UnknownAuthor'a düşmemek için dosya adı ve metin analizi
+    # Last-resort author recovery: Extract from filename or text patterns to avoid UnknownAuthor
     if not surnames:
-        # 1. Dosya adından yazar yakalama (örn: 004-Adakli -> Adakli, sibel-439079 -> Sibel)
+        # 1. Extract potential author surname from filename tokens (e.g., 004-Adakli -> Adakli, sibel-439079 -> Sibel)
         fn_clean = re.sub(r'[\d_\-\.]+', ' ', os.path.splitext(filename)[0]).strip()
         tokens = [t.capitalize() for t in fn_clean.split() if len(t) > 2 and t.lower() not in ["chapter", "draft", "final", "arxiv", "ebook", "part", "vol"]]
         if tokens:
@@ -483,7 +483,7 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
             if not meta.get("authors"):
                 meta["authors"] = [{"first": "", "last": tokens[0]}]
         else:
-            # 2. Metin içinde 'Yayına Hazırlayan' veya 'BY' ara
+           # 2. Search for explicit author markers in the front text (e.g., 'BY', 'Yayına Hazırlayan', 'Yazar:')
             match_by = re.search(r'(?i)(?:by|hazırlayan|yazar[:\s]*)\s+([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)*)', front_text[:2000])
             if match_by:
                 name_parts = match_by.group(1).split()
