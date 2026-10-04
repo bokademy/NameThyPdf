@@ -96,13 +96,15 @@ def is_valid_isbn(s: str) -> bool:
 # ================= TEXT EXTRACTION =================
 
 def scan_pdf_text(pdf_path: str) -> str:
-    """Extracts text from the first pages, falls back to OCR if unreadable."""
+    """Extracts text from the first 5 pages, falls back to OCR if unreadable."""
     safe_path = win_safe(pdf_path)
     text_content = []
     try:
         doc = pymupdf.open(safe_path)
         for i in range(min(5, len(doc))):
-            text_content.append(doc[i].get_text().strip())
+            t = doc[i].get_text().strip()
+            if t:
+                text_content.append(f"\n--- Page {i+1} ---\n" + t)
         full_text = "\n".join(text_content)
         
         if len(full_text.strip()) < 50:
@@ -110,15 +112,15 @@ def scan_pdf_text(pdf_path: str) -> str:
             full_text = "\n".join([pytesseract.image_to_string(img) for img in images])
             
         doc.close()
-        return full_text[:5000]
+        return full_text[:6000]
     except Exception:
         return ""
 
 # ================= IDENTIFIER RESOLUTION =================
 
 def extract_all_identifiers(filename: str, text: str) -> dict:
-    """Extracts DOI, ISBN, and Internet Archive IDs using regular expressions."""
-    ids = {"doi": "", "isbn": "", "ia_id": ""}
+    """Extracts DOI, ISBN, arXiv, and Internet Archive IDs using regular expressions."""
+    ids = {"doi": "", "isbn": "", "ia_id": "", "arxiv_id": ""}
     combined = f"{filename}\n{text}"
     
     # Extract DOI
@@ -143,9 +145,10 @@ def extract_all_identifiers(filename: str, text: str) -> dict:
     if ia_match:
         ids["ia_id"] = ia_match.group(1).rstrip('._/')
 
-    # arXiv ID regex (e.g. 2402.14531 or arXiv:2402.14531)
-    arxiv_match = re.search(r'(?:arxiv[:\s]?)?(\d{4}\.\d{4,5}(?:v\d+)?)', filename + " " + front_text[:1000], re.I)
-    arxiv_id = arxiv_match.group(1) if arxiv_match else None
+    # Extract arXiv ID
+    arxiv_match = re.search(r'(?:arxiv[:\s]?)?(\d{4}\.\d{4,5}(?:v\d+)?)', filename + " " + text[:1500], re.I)
+    if arxiv_match:
+        ids["arxiv_id"] = arxiv_match.group(1)
         
     return ids
 
@@ -280,9 +283,9 @@ def resolve_internet_archive(ia_id: str) -> dict:
             authors = []
             if isinstance(creator, str) and creator:
                 parts = creator.replace(',', ' ').split()
-                if len(parts) >= 2:
+                if len(parts) >= 2: 
                     authors.append({"first": " ".join(parts[:-1]).title(), "last": parts[-1].title()})
-                elif len(parts) == 1:
+                elif len(parts) == 1: 
                     authors.append({"first": parts[0].title(), "last": ""})
             elif isinstance(creator, list):
                 for c in creator:
@@ -311,7 +314,6 @@ def resolve_metadata_groq(filename: str, front_text: str, api_key: str = None) -
     """Fallback LLM metadata extractor using Groq with exponential backoff on 429."""
     key = api_key or os.getenv("GROQ_API_KEY")
     if not key:
-        print("    [!] Groq Warning: No API key found.")
         return {}
 
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -329,30 +331,25 @@ ORIGINAL FILENAME: {filename}
 
 CRITICAL RULES FOR METADATA EXTRACTION:
 1. AUTHORS:
-   - Look carefully for author names. They may appear under the title, above the title, in headers/footers, or preceded by "BY", "Yazar:", "Yazan:", or "Yayına Hazırlayan" (for compiled books/reports treat as author or editor).
-   - In Turkish academic journals (e.g., Praksis, DergiPark), authors often appear in the header, footer, or right beneath the article title (e.g., "Gülseren Adaklı").
-   - In Master/PhD Theses, the author appears after "BY" or "YAZAN" (e.g., "BY SİBEL BEKİROĞLU" -> First: Sibel, Last: Bekiroğlu).
-   - For arXiv preprints, authors appear right below the title before the abstract.
-   - Do NOT return empty authors or "Unknown" if a human name is clearly visible on the title/cover page.
+   - Identify the authors carefully. They may be formatted as 'By [Name]', 'Yazar:', 'Yayına Hazırlayan:', or appear under the title or in header/footer.
+   - For theses: Look for 'BY [NAME]' or author in the title page.
+   - For edited books/reports: If 'Yayına Hazırlayan' exists, extract that person as author/editor.
+   - In Turkish journals (e.g. Praksis), look for author names right below the article title or in header/footer (e.g., 'Gülseren Adaklı').
+   - For arXiv preprints, authors appear right below the title.
+   - If filename contains a clear human name (e.g., '004-Adakli', 'sibel-439079'), consider it as strong hint for author surname.
    
 2. TITLE:
-   - Identify the TRUE document/article/book/thesis title.
-   - Do NOT confuse journal names (e.g., "Praksis"), university names ("Mülkiye", "Orta Doğu Teknik Üniversitesi"), or chapter labels ("CHAPTER 13") with the main title.
-   
-3. DOCUMENT TYPE (doc_type):
-   - Choose strictly from: "Book", "Journal Article", "Book Chapter", "Conference Paper", "Working Paper", "Report", "Thesis".
-   - If it says "A THESIS SUBMITTED TO...", set doc_type to "Thesis".
-   - If it has volume/issue/pages of a journal (e.g., Praksis (4) 2001, 242-266), set doc_type to "Journal Article".
-   - If it has "ISBN" or is a published book/booklet, set doc_type to "Book".
+   - Identify the real title of the work.
+   - Do NOT confuse journal names ('Praksis'), institutions ('Mülkiyeliler Birliği', 'METU'), or chapter labels ('Chapter 13') with the main title.
 
-4. YEAR:
-   - Extract the 4-digit publication year from copyright, header, thesis date, or journal date.
+3. DOCUMENT TYPE (doc_type):
+   - Choose strictly from: "Book", "Journal Article", "Book Chapter", "Conference Paper", "Report", "Thesis".
 
 Return ONLY a valid JSON object matching this schema:
 {{
-  "main_title": "Full primary title",
+  "main_title": "Full title",
   "subtitle": "Subtitle if any",
-  "book_title": "Book title if this is a chapter/collection",
+  "book_title": "Book title if chapter",
   "journal_name": "Journal name if article",
   "authors": [{{"first": "Firstname", "last": "Lastname"}}],
   "editors": [{{"first": "Firstname", "last": "Lastname"}}],
@@ -362,8 +359,7 @@ Return ONLY a valid JSON object matching this schema:
 }}
 
 DOCUMENT TEXT:
-{clean_sample[:3500]}
-"""
+{clean_sample[:4000]}
 """
 
     payload = {
@@ -373,7 +369,6 @@ DOCUMENT TEXT:
         "temperature": 0.0
     }
 
-    # Retry up to 3 times if rate-limited
     for attempt in range(3):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -386,16 +381,14 @@ DOCUMENT TEXT:
                 return data
             elif r.status_code == 429:
                 wait_time = (attempt + 1) * 3
-                print(f"    [!] Rate limited on '{filename[:35]}...'. Waiting {wait_time}s before retry (Attempt {attempt+1}/3)...")
                 time.sleep(wait_time)
             else:
-                print(f"    [!] Groq API Error {r.status_code}: {r.text[:100]}")
                 break
-        except Exception as e:
-            print(f"    [!] Groq Request Exception: {e}")
+        except Exception:
             break
 
     return {}
+
 # ================= PIPELINE EXECUTION =================
 
 def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, central_ris_path: str, groq_key: str = None):
@@ -410,13 +403,12 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
     ids = extract_all_identifiers(filename, front_text)
 
     # 1. Exact Database Lookups
-    # If filename or text clearly indicates a book with an ISBN, prioritize ISBN over embedded article DOIs
     is_book_context = any(w in front_text.lower() for w in ["isbn", "contents", "university press", "index"]) or "isbn" in filename.lower()
 
     if ids.get("isbn") and is_book_context:
         meta = resolve_google_books(ids["isbn"]) or resolve_openlibrary_isbn(ids["isbn"])
 
-    # Fallback to DOI only if ISBN did not resolve or wasn't prioritized
+    # Fallback to DOI
     if not meta and ids.get("doi"):
         doi_meta = resolve_crossref_doi(ids["doi"])
         if doi_meta and doi_meta.get("doc_type") == "Journal Article" and is_book_context:
@@ -424,7 +416,7 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         if doi_meta:
             meta = doi_meta
 
-    # Fallback to ISBN if DOI was skipped or failed
+    # Fallback to ISBN if DOI skipped
     if not meta and ids.get("isbn"):
         meta = resolve_google_books(ids["isbn"]) or resolve_openlibrary_isbn(ids["isbn"])
 
@@ -437,10 +429,15 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         if cand and cand.get("main_title"):
             meta = cand
 
-    # Title cleanup
     # Safe title extraction
     raw_main_title = str(meta.get("main_title") or meta.get("title") or "").strip()
     raw_main_title = re.sub(r'(?i)copyright.*', '', raw_main_title).strip()
+    
+    # Başlık boşsa ilk anlamlı satırdan veya dosya adından kurtar
+    if not raw_main_title or len(raw_main_title) < 3:
+        clean_lines = [l.strip() for l in front_text.splitlines() if len(l.strip()) > 6 and not l.strip().startswith("---")]
+        raw_main_title = clean_lines[0] if clean_lines else os.path.splitext(filename)[0]
+
     clean_main = clean_part(raw_main_title, max_chars=80).title()
     if len(clean_main) < 2 and len(raw_main_title) > 0:
         clean_main = raw_main_title.replace(" ", ".")
@@ -452,24 +449,45 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
             if isinstance(p, dict):
                 l_name = p.get("last", "").strip()
                 f_name = p.get("first", "").strip()
-                
                 if l_name: 
                     l = sanitize_text(l_name).title()
                 elif f_name: 
                     l = sanitize_text(f_name.split()[-1]).title()
                 else: 
                     continue
-                    
                 if l and len(l) < 30 and l.lower() not in STOP_ENTITIES:
                     if not re.search(r'(?i)(copyright|rights reserved|published|printed|ltd|inc|ventures|press|group|company|llc|corp|muse|text)', l):
                         extracted.append(l)
+            elif isinstance(p, str) and p.strip():
+                parts = p.strip().split()
+                l = sanitize_text(parts[-1]).title()
+                if l and len(l) < 30 and l.lower() not in STOP_ENTITIES:
+                    extracted.append(l)
         return extracted
 
     surnames = extract_surnames(meta.get("authors")) or extract_surnames(meta.get("editors"))
 
+    # Son Çare Yazar Kurtarma: UnknownAuthor'a düşmemek için dosya adı ve metin analizi
     if not surnames:
-        authors_prefix = "UnknownAuthor"
-    elif len(surnames) > 3:
+        # 1. Dosya adından yazar yakalama (örn: 004-Adakli -> Adakli, sibel-439079 -> Sibel)
+        fn_clean = re.sub(r'[\d_\-\.]+', ' ', os.path.splitext(filename)[0]).strip()
+        tokens = [t.capitalize() for t in fn_clean.split() if len(t) > 2 and t.lower() not in ["chapter", "draft", "final", "arxiv", "ebook", "part", "vol"]]
+        if tokens:
+            surnames = [tokens[0]]
+            if not meta.get("authors"):
+                meta["authors"] = [{"first": "", "last": tokens[0]}]
+        else:
+            # 2. Metin içinde 'Yayına Hazırlayan' veya 'BY' ara
+            match_by = re.search(r'(?i)(?:by|hazırlayan|yazar[:\s]*)\s+([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)*)', front_text[:2000])
+            if match_by:
+                name_parts = match_by.group(1).split()
+                surnames = [name_parts[-1].capitalize()]
+                if not meta.get("authors"):
+                    meta["authors"] = [{"first": " ".join(name_parts[:-1]), "last": name_parts[-1]}]
+            else:
+                surnames = ["AcademicWork"]
+
+    if len(surnames) > 3:
         authors_prefix = f"{surnames[0]}.et.al"
     else:
         authors_prefix = ".".join(surnames)
@@ -505,7 +523,6 @@ def run_pipeline(input_dir: str, output_dir: str, groq_key: str = None):
         path = os.path.join(input_dir, f)
         res = process_single_pdf(path, library_dir, quarantine_dir, central_ris_path, groq_key)
         results.append(res)
-        # Delay between requests to respect free-tier Groq TPM/RPM limits
         time.sleep(2.0)
         
     return results
@@ -531,6 +548,9 @@ def write_ris_record(ris_filepath: str, meta: dict, target_pdf_path: str):
                 f, l = " ".join(parts[:-1]), parts[-1]
             if l or f: 
                 lines.append(f"AU  - {l}, {f}".strip(" ,"))
+        elif isinstance(a, str) and a.strip():
+            parts = a.strip().split()
+            lines.append(f"AU  - {parts[-1].title()}, {' '.join(parts[:-1]).title()}".strip(" ,"))
 
     if ris_type == "CHAP" and meta.get("book_title"): 
         lines.append(f"T2  - {str(meta.get('book_title')).title()}")
@@ -543,7 +563,7 @@ def write_ris_record(ris_filepath: str, meta: dict, target_pdf_path: str):
 
     for key, ris_code in [("publisher", "PB"), ("city", "CY"), ("volume", "VL"), ("issue", "IS"), ("pages", "SP"), ("doi", "DO"), ("issn", "SN")]:
         val = str(meta.get(key) or "").strip()
-        if val and val.lower() not in ["null", "none", ""]:
+        if val and val.lower() not in ["null", "none", ""]: 
             lines.append(f"{ris_code}  - {val.title() if key in ['publisher', 'city'] else val}")
 
     lines.append(f"L1  - {os.path.abspath(target_pdf_path)}")
