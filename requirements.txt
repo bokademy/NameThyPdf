@@ -1,0 +1,5 @@
+streamlit>=1.30.0
+pymupdf>=1.23.0
+requests>=2.31.0
+pytesseract>=0.3.10
+pdf2image>=1.16.3
