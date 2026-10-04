@@ -142,6 +142,10 @@ def extract_all_identifiers(filename: str, text: str) -> dict:
     ia_match = re.search(r'(?:archive\.org\/details\/|urn:lcp:)([a-zA-Z0-9_\-\.]+)', combined)
     if ia_match:
         ids["ia_id"] = ia_match.group(1).rstrip('._/')
+
+    # arXiv ID regex (e.g. 2402.14531 or arXiv:2402.14531)
+    arxiv_match = re.search(r'(?:arxiv[:\s]?)?(\d{4}\.\d{4,5}(?:v\d+)?)', filename + " " + front_text[:1000], re.I)
+    arxiv_id = arxiv_match.group(1) if arxiv_match else None
         
     return ids
 
@@ -318,29 +322,48 @@ def resolve_metadata_groq(filename: str, front_text: str, api_key: str = None) -
 
     clean_sample = front_text.replace('"', "'").replace('\\', ' ')
     prompt = f"""
-Analyze the filename and front text of an academic document to extract metadata.
+You are an expert academic bibliographer and metadata extractor.
+Analyze the following academic document's filename and first pages to extract bibliographic metadata.
 
 ORIGINAL FILENAME: {filename}
 
-GUIDELINES:
-1. The original filename is your best hint for true human authors and title.
-2. Choose DOC_TYPE strictly from: "Book", "Journal Article", "Book Chapter", "Conference Paper", "Working Paper", "Report", "Thesis".
+CRITICAL RULES FOR METADATA EXTRACTION:
+1. AUTHORS:
+   - Look carefully for author names. They may appear under the title, above the title, in headers/footers, or preceded by "BY", "Yazar:", "Yazan:", or "Yayına Hazırlayan" (for compiled books/reports treat as author or editor).
+   - In Turkish academic journals (e.g., Praksis, DergiPark), authors often appear in the header, footer, or right beneath the article title (e.g., "Gülseren Adaklı").
+   - In Master/PhD Theses, the author appears after "BY" or "YAZAN" (e.g., "BY SİBEL BEKİROĞLU" -> First: Sibel, Last: Bekiroğlu).
+   - For arXiv preprints, authors appear right below the title before the abstract.
+   - Do NOT return empty authors or "Unknown" if a human name is clearly visible on the title/cover page.
+   
+2. TITLE:
+   - Identify the TRUE document/article/book/thesis title.
+   - Do NOT confuse journal names (e.g., "Praksis"), university names ("Mülkiye", "Orta Doğu Teknik Üniversitesi"), or chapter labels ("CHAPTER 13") with the main title.
+   
+3. DOCUMENT TYPE (doc_type):
+   - Choose strictly from: "Book", "Journal Article", "Book Chapter", "Conference Paper", "Working Paper", "Report", "Thesis".
+   - If it says "A THESIS SUBMITTED TO...", set doc_type to "Thesis".
+   - If it has volume/issue/pages of a journal (e.g., Praksis (4) 2001, 242-266), set doc_type to "Journal Article".
+   - If it has "ISBN" or is a published book/booklet, set doc_type to "Book".
 
-Return ONLY valid JSON matching this schema:
+4. YEAR:
+   - Extract the 4-digit publication year from copyright, header, thesis date, or journal date.
+
+Return ONLY a valid JSON object matching this schema:
 {{
-  "main_title": "",
-  "subtitle": "",
-  "book_title": "",
-  "journal_name": "",
-  "authors": [{{"first": "", "last": ""}}],
-  "editors": [{{"first": "", "last": ""}}],
-  "year": "",
-  "publisher": "",
-  "doc_type": ""
+  "main_title": "Full primary title",
+  "subtitle": "Subtitle if any",
+  "book_title": "Book title if this is a chapter/collection",
+  "journal_name": "Journal name if article",
+  "authors": [{{"first": "Firstname", "last": "Lastname"}}],
+  "editors": [{{"first": "Firstname", "last": "Lastname"}}],
+  "year": "YYYY",
+  "publisher": "Publisher or University",
+  "doc_type": "Journal Article | Book | Thesis | Book Chapter | Report"
 }}
 
-TEXT:
-{clean_sample[:2000]}
+DOCUMENT TEXT:
+{clean_sample[:3500]}
+"""
 """
 
     payload = {
