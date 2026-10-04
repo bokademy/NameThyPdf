@@ -383,7 +383,6 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         shutil.copy2(win_safe(filepath), win_safe(os.path.join(quarantine_dir, filename)))
         return False, filename, "Unreadable text layer"
 
-   meta = {}
     meta = {}
     ids = extract_all_identifiers(filename, front_text)
 
