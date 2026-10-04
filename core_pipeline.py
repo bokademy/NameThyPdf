@@ -383,15 +383,28 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         shutil.copy2(win_safe(filepath), win_safe(os.path.join(quarantine_dir, filename)))
         return False, filename, "Unreadable text layer"
 
-    meta = {}
+   meta = {}
     ids = extract_all_identifiers(filename, front_text)
 
     # 1. Exact Database Lookups
-    if ids["doi"]:
-        meta = resolve_crossref_doi(ids["doi"])
-    if not meta and ids["isbn"]:
+    # If filename or text clearly indicates a book with an ISBN, prioritize ISBN over embedded article DOIs
+    if ids.get("isbn") and ("isbn" in filename.lower() or "press" in front_text.lower() or "contents" in front_text.lower()):
         meta = resolve_google_books(ids["isbn"]) or resolve_openlibrary_isbn(ids["isbn"])
-    if not meta and ids["ia_id"]:
+
+    # Fallback to DOI only if ISBN did not resolve or wasn't prioritized
+    if not meta and ids.get("doi"):
+        doi_meta = resolve_crossref_doi(ids["doi"])
+        # Guardrail: If text contains strong book indicators but DOI resolved to a journal article, discard it
+        if doi_meta and doi_meta.get("doc_type") == "Journal Article" and ("isbn" in front_text.lower() or "contents" in front_text.lower()):
+            pass
+        elif doi_meta:
+            meta = doi_meta
+
+    # Fallback to ISBN if DOI was skipped or failed
+    if not meta and ids.get("isbn"):
+        meta = resolve_google_books(ids["isbn"]) or resolve_openlibrary_isbn(ids["isbn"])
+
+    if not meta and ids.get("ia_id"):
         meta = resolve_internet_archive(ids["ia_id"])
 
     # 2. Groq LLM Fallback
@@ -399,14 +412,6 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
         cand = resolve_metadata_groq(filename, front_text, groq_key)
         if cand and cand.get("main_title"):
             meta = cand
-
-    raw_main_title = str(meta.get("main_title", "")).strip()
-    if not meta or not raw_main_title or raw_main_title.lower() in [
-        "introduction", "preface", "contents", "table of contents", 
-        "chapter", "index", "conclusion", "null", "none", "n/a", "copyright"
-    ]:
-        shutil.copy2(win_safe(filepath), win_safe(os.path.join(quarantine_dir, filename)))
-        return False, filename, "Failed to resolve metadata"
 
     # Title cleanup
     raw_main_title = re.sub(r'(?i)copyright.*', '', raw_main_title)
