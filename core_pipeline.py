@@ -415,9 +415,9 @@ def process_single_pdf(filepath: str, library_dir: str, quarantine_dir: str, cen
             meta = cand
 
     # Title cleanup
-    raw_main_title = re.sub(r'(?i)copyright.*', '', raw_main_title)
-    raw_main_title = re.sub(r'(?i)all rights reserved.*', '', raw_main_title)
-    raw_main_title = re.sub(r'^(19|20)\d{2}[-\s]+', '', raw_main_title)
+    # Safe title extraction
+    raw_main_title = str(meta.get("main_title") or meta.get("title") or "").strip()
+    raw_main_title = re.sub(r'(?i)copyright.*', '', raw_main_title).strip()
     clean_main = clean_part(raw_main_title, max_chars=80).title()
     if len(clean_main) < 2 and len(raw_main_title) > 0:
         clean_main = raw_main_title.replace(" ", ".")
